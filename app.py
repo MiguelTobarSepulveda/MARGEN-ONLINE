@@ -20,7 +20,6 @@ def load_data():
 
 ventas, recetas, insumos = load_data()
 
-# --- NORMALIZAR NOMBRES DE COLUMNAS ---
 def normalizar_columnas(df):
     df.columns = [unidecode.unidecode(col.strip().upper()) for col in df.columns]
     return df
@@ -29,7 +28,6 @@ ventas = normalizar_columnas(ventas)
 recetas = normalizar_columnas(recetas)
 insumos = normalizar_columnas(insumos)
 
-# --- LÓGICA PRINCIPAL DEL PROCESAMIENTO ---
 ventas["MES"] = pd.to_datetime(ventas["FECHA"], errors="coerce").dt.strftime("%Y-%m")
 recetas["CANTIDAD USADA"] = pd.to_numeric(recetas["CANTIDAD USADA"], errors="coerce")
 insumos["FECHA"] = pd.to_datetime(insumos["FECHA"], errors="coerce")
@@ -74,7 +72,6 @@ costos_por_venta = todos_los_productos.merge(costos_por_venta, on="CODIGO PRODUC
 costos_por_venta["COSTO UNITARIO FINAL"] = costos_por_venta["COSTO UNITARIO FINAL"].fillna(0)
 costos_por_venta["MARGEN %"] = costos_por_venta["MARGEN %"].fillna(0)
 
-# --- INTERFAZ ---
 st.sidebar.header("Filtros")
 cliente_sel = st.sidebar.selectbox("Cliente", ["Todos"] + sorted(costos_por_venta["CLIENTE"].dropna().unique().tolist()))
 producto_sel = st.sidebar.selectbox("Producto", ["Todos"] + sorted(costos_por_venta["PRODUCTO"].dropna().unique().tolist()))
