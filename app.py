@@ -16,48 +16,67 @@ def load_data_from_sheets():
 
     ventas = pd.DataFrame(sheet.worksheet("LIBRO DE VENTAS").get_all_records())
     recetas = pd.DataFrame(sheet.worksheet("RECETAS DE PRODUCTOS").get_all_records())
-    insumos_hist = pd.DataFrame(sheet.worksheet("PRECIO DE INSUMOS").get_all_records())
+    insumos = pd.DataFrame(sheet.worksheet("PRECIO DE INSUMOS").get_all_records())
 
-    return ventas, recetas, insumos_hist
+    return ventas, recetas, insumos
 
-ventas, recetas, insumos_hist = load_data_from_sheets()
+ventas, recetas, insumos = load_data_from_sheets()
 
-# Asegurar formato correcto
-ventas["CANTIDAD"] = pd.to_numeric(ventas["CANTIDAD"], errors="coerce").fillna(0)
-ventas["PRECIO UNITARIO"] = pd.to_numeric(ventas["PRECIO UNITARIO"], errors="coerce").fillna(0)
-insumos_hist["PRECIO INSUMO"] = pd.to_numeric(insumos_hist["PRECIO INSUMO"], errors="coerce").fillna(0)
+# Normalizar códigos
+recetas["CÓDIGO INSUMO"] = recetas["CÓDIGO INSUMO"].str.strip().str.upper()
+insumos["CÓDIGO INSUMO"] = insumos["CÓDIGO INSUMO"].str.strip().str.upper()
+ventas["CÓDIGO PRODUCTO"] = ventas["CÓDIGO PRODUCTO"].str.strip().str.upper()
+recetas["CÓDIGO PRODUCTO"] = recetas["CÓDIGO PRODUCTO"].str.strip().str.upper()
+
+# Convertir numéricos
+ventas["CANTIDAD PRODUCTO"] = pd.to_numeric(ventas["CANTIDAD PRODUCTO"], errors="coerce").fillna(0)
+insumos["PRECIO UNITARIO"] = pd.to_numeric(insumos["PRECIO UNITARIO"], errors="coerce").fillna(0)
 recetas["CANTIDAD"] = pd.to_numeric(recetas["CANTIDAD"], errors="coerce").fillna(0)
 
-# Calcular costo unitario por receta
-recetas_insumos = pd.merge(recetas, insumos_hist, how="left", on=["CÓDIGO INSUMO", "MES"])
-recetas_insumos["COSTO TOTAL"] = recetas_insumos["CANTIDAD"] * recetas_insumos["PRECIO INSUMO"]
-costos_unitarios = recetas_insumos.groupby(["CÓDIGO PRODUCTO", "MES"], as_index=False)["COSTO TOTAL"].sum()
-costos_unitarios.rename(columns={"COSTO TOTAL": "COSTO UNITARIO"}, inplace=True)
+# Calcular costo unitario de receta
+recetas = recetas.merge(insumos[["CÓDIGO INSUMO", "PRECIO UNITARIO"]], how="left", on="CÓDIGO INSUMO")
+recetas["COSTO PARCIAL"] = recetas["CANTIDAD"] * recetas["PRECIO UNITARIO"]
 
-# Unir ventas con costos
-ventas_costos = pd.merge(ventas, costos_unitarios, how="left", on=["CÓDIGO PRODUCTO", "MES"])
-ventas_costos["COSTO UNITARIO"] = ventas_costos["COSTO UNITARIO"].fillna(0)
-ventas_costos["MARGEN %"] = 1 - (ventas_costos["COSTO UNITARIO"] / ventas_costos["PRECIO UNITARIO"])
-ventas_costos["MARGEN %"] = ventas_costos["MARGEN %"].fillna(1)
-ventas_costos["SIN COSTEO"] = ventas_costos["COSTO UNITARIO"].apply(lambda x: "SI" if x == 0 else "NO")
+# Sumar costos parciales por código producto
+costo_unitario = recetas.groupby(["CÓDIGO PRODUCTO", "MES"])["COSTO PARCIAL"].sum().reset_index()
+costo_unitario = costo_unitario.rename(columns={"COSTO PARCIAL": "COSTO UNITARIO"})
 
-# Interfaz
+# Unir con ventas
+ventas_exp = ventas.merge(costo_unitario, how="left", on=["CÓDIGO PRODUCTO", "MES"])
+
+# Costo 0 si no hay receta
+ventas_exp["COSTO UNITARIO"] = ventas_exp["COSTO UNITARIO"].fillna(0)
+
+# Calcular margen
+ventas_exp["MARGEN %"] = 1 - (ventas_exp["COSTO UNITARIO"] / ventas_exp["PRECIO UNITARIO"])
+ventas_exp["MARGEN %"] = ventas_exp["MARGEN %"].replace([float("inf"), -float("inf")], 0).fillna(0)
+
+# Columna SIN COSTEO
+ventas_exp["SIN COSTEO"] = ventas_exp["COSTO UNITARIO"].apply(lambda x: "SI" if x == 0 else "NO")
+
+# Filtros
 st.sidebar.header("Filtros")
-clientes = ["Todos"] + sorted(ventas_costos["CLIENTE"].unique())
-productos = ["Todos"] + sorted(ventas_costos["NOMBRE DE PRODUCTO"].unique())
-meses = ["Todos"] + sorted(ventas_costos["MES"].unique())
-
+clientes = ["Todos"] + sorted(ventas_exp["CLIENTE"].dropna().unique().tolist())
 cliente_sel = st.sidebar.selectbox("Cliente", clientes)
+
+productos = ["Todos"] + sorted(ventas_exp["NOMBRE DE PRODUCTO"].dropna().unique().tolist())
 producto_sel = st.sidebar.selectbox("Producto", productos)
+
+meses = ["Todos"] + sorted(ventas_exp["MES"].dropna().unique().tolist())
 mes_sel = st.sidebar.selectbox("Mes", meses)
 
-df_filtrado = ventas_costos.copy()
+# Aplicar filtros
+df = ventas_exp.copy()
 if cliente_sel != "Todos":
-    df_filtrado = df_filtrado[df_filtrado["CLIENTE"] == cliente_sel]
+    df = df[df["CLIENTE"] == cliente_sel]
 if producto_sel != "Todos":
-    df_filtrado = df_filtrado[df_filtrado["NOMBRE DE PRODUCTO"] == producto_sel]
+    df = df[df["NOMBRE DE PRODUCTO"] == producto_sel]
 if mes_sel != "Todos":
-    df_filtrado = df_filtrado[df_filtrado["MES"] == mes_sel]
+    df = df[df["MES"] == mes_sel]
 
+# Mostrar resultados
 st.markdown("## Márgenes por Cliente y Producto")
-st.dataframe(df_filtrado.reset_index(drop=True))
+st.dataframe(df[[
+    "NOMBRE DE PRODUCTO", "NÚMERO", "CANTIDAD PRODUCTO", "PRECIO UNITARIO",
+    "COSTO UNITARIO", "MARGEN %", "SIN COSTEO"
+]])
