@@ -1,79 +1,73 @@
+
 import streamlit as st
 import pandas as pd
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime
+import json
 
-st.set_page_config(page_title="Márgenes por Cliente y Producto", layout="wide")
+st.set_page_config(page_title="Consulta de Márgenes", layout="wide")
 
 @st.cache_data
 def load_data():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds = ServiceAccountCredentials.from_json_keyfile_name("gcp_credentials.json", scope)
     client = gspread.authorize(creds)
-
-    # Reemplaza con el nombre exacto de tu archivo de Google Sheets
     sheet = client.open("MARGENES_AUTOMATIZADO")
+
     ventas = pd.DataFrame(sheet.worksheet("LIBRO DE VENTAS").get_all_records())
     recetas = pd.DataFrame(sheet.worksheet("RECETAS DE PRODUCTOS").get_all_records())
     insumos = pd.DataFrame(sheet.worksheet("PRECIO DE INSUMOS").get_all_records())
+
     return ventas, recetas, insumos
 
 ventas, recetas, insumos = load_data()
 
-ventas["MES"] = pd.to_datetime(ventas["FECHA"], errors="coerce").dt.strftime("%Y-%m")
-insumos["FECHA"] = pd.to_datetime(insumos["FECHA"], errors="coerce")
-insumos["MES"] = insumos["FECHA"].dt.strftime("%Y-%m")
+# Convertir columnas clave a texto y limpiar espacios
+ventas["CODIGO PRODUCTO"] = ventas["CODIGO PRODUCTO"].astype(str).str.strip()
+recetas["CODIGO PRODUCTO"] = recetas["CODIGO PRODUCTO"].astype(str).str.strip()
+insumos["CODIGO INSUMO"] = insumos["CODIGO INSUMO"].astype(str).str.strip()
 
-ventas_exp = ventas.merge(recetas, on="CODIGO PRODUCTO", how="left")
+# Convertir cantidades y precios
+recetas["CANTIDAD"] = pd.to_numeric(recetas["CANTIDAD"], errors="coerce").fillna(0)
+insumos["PRECIO"] = pd.to_numeric(insumos["PRECIO"], errors="coerce").fillna(0)
+ventas["CANTIDAD PRODUCTO"] = pd.to_numeric(ventas["CANTIDAD PRODUCTO"], errors="coerce").fillna(0)
+ventas["PRECIO UNITARIO"] = pd.to_numeric(ventas["PRECIO UNITARIO"], errors="coerce").fillna(0)
 
-ultimos_precios = (
-    insumos.sort_values("FECHA")
-    .groupby(["CODIGO INSUMO", "MES"], as_index=False)
-    .last()
-)
+# Calcular costo unitario por receta
+recetas = recetas.merge(insumos[["CODIGO INSUMO", "PRECIO"]], on="CODIGO INSUMO", how="left")
+recetas["COSTO PARCIAL"] = recetas["CANTIDAD"] * recetas["PRECIO"]
+costos_unitarios = recetas.groupby("CODIGO PRODUCTO", as_index=False)["COSTO PARCIAL"].sum()
+costos_unitarios.rename(columns={"COSTO PARCIAL": "COSTO UNITARIO"}, inplace=True)
 
-ventas_exp = ventas_exp.merge(
-    ultimos_precios[["CODIGO INSUMO", "MES", "PRECIO"]],
-    on=["CODIGO INSUMO", "MES"],
-    how="left"
-)
+# Marcar productos con receta
+costos_unitarios["TIENE COSTEO"] = True
 
-ventas_exp["CANTIDAD INSUMO"] = pd.to_numeric(ventas_exp["CANTIDAD"], errors="coerce")
-ventas_exp["COSTO UNITARIO"] = ventas_exp["CANTIDAD INSUMO"] * ventas_exp["PRECIO"]
-ventas_exp["COSTO UNITARIO"] = ventas_exp["COSTO UNITARIO"].fillna(0)
+# Unir con ventas
+ventas = ventas.merge(costos_unitarios, on="CODIGO PRODUCTO", how="left")
 
-costos = ventas_exp.groupby(["NÚMERO"], as_index=False).agg({
-    "COSTO UNITARIO": "sum",
-    "CANTIDAD_x": "first",
-    "PRECIO UNITARIO": "first",
-    "NOMBRE DE PRODUCTO": "first",
-    "CLIENTE": "first",
-    "MES": "first",
-    "CODIGO PRODUCTO": "first"
-})
+# Rellenar productos sin receta
+ventas["COSTO UNITARIO"] = ventas["COSTO UNITARIO"].fillna(0)
+ventas["TIENE COSTEO"] = ventas["TIENE COSTEO"].fillna(False)
 
-costos["COSTO UNITARIO FINAL"] = costos["COSTO UNITARIO"] / costos["CANTIDAD_x"]
-costos["MARGEN %"] = (
-    (costos["PRECIO UNITARIO"] - costos["COSTO UNITARIO FINAL"]) /
-    costos["PRECIO UNITARIO"]
-).fillna(0)
+# Calcular margen
+ventas["MARGEN %"] = 100 * (ventas["PRECIO UNITARIO"] - ventas["COSTO UNITARIO"]) / ventas["PRECIO UNITARIO"]
+ventas["MARGEN %"] = ventas["MARGEN %"].round(4)
 
-st.sidebar.header("Filtros")
-cliente_sel = st.sidebar.selectbox("Cliente", ["Todos"] + sorted(costos["CLIENTE"].dropna().unique()))
-producto_sel = st.sidebar.selectbox("Producto", ["Todos"] + sorted(costos["NOMBRE DE PRODUCTO"].dropna().unique()))
-mes_sel = st.sidebar.selectbox("Mes", ["Todos"] + sorted(costos["MES"].dropna().unique()))
+# Interfaz
+st.sidebar.title("Filtros")
+cliente_sel = st.sidebar.selectbox("Cliente", ["Todos"] + sorted(ventas["CLIENTE"].unique()))
+producto_sel = st.sidebar.selectbox("Producto", ["Todos"] + sorted(ventas["NOMBRE PRODUCTO"].unique()))
+mes_sel = st.sidebar.selectbox("Mes", ["Todos"] + sorted(ventas["MES"].unique()))
 
-df = costos.copy()
+filtro = ventas.copy()
 if cliente_sel != "Todos":
-    df = df[df["CLIENTE"] == cliente_sel]
+    filtro = filtro[filtro["CLIENTE"] == cliente_sel]
 if producto_sel != "Todos":
-    df = df[df["NOMBRE DE PRODUCTO"] == producto_sel]
+    filtro = filtro[filtro["NOMBRE PRODUCTO"] == producto_sel]
 if mes_sel != "Todos":
-    df = df[df["MES"] == mes_sel]
+    filtro = filtro[filtro["MES"] == mes_sel]
 
 st.title("Márgenes por Cliente y Producto")
-st.dataframe(df[[
-    "MES", "CLIENTE", "NOMBRE DE PRODUCTO", "NÚMERO", "CANTIDAD_x",
-    "PRECIO UNITARIO", "COSTO UNITARIO FINAL", "MARGEN %"
-]].rename(columns={"NÚMERO": "FACTURA", "CANTIDAD_x": "CANTIDAD"}))
+st.dataframe(filtro[[
+    "NOMBRE PRODUCTO", "NÚMERO", "CANTIDAD PRODUCTO", "PRECIO UNITARIO", "COSTO UNITARIO", "MARGEN %", "TIENE COSTEO"
+]])
